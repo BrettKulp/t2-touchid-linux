@@ -18,3 +18,7 @@ src/t2-pam-fingerprint-prompt
 enrollment_research/evidence/
 enrollment_research/private/
 enrollment_research/captures/
+specs.md
+summary.txt
+linux-bringup-steps.md
+macSteps.md

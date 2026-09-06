@@ -225,6 +225,22 @@ def sleep_mode_check() -> Check:
         return Check(
             "pass", "suspend-mode", "s2idle selected; T2 resume path preserved"
         )
+    effective = run("systemd-analyze", "cat-config", "systemd/sleep.conf")
+    section = ""
+    configured = ""
+    if effective.returncode == 0:
+        for raw_line in effective.stdout.splitlines():
+            line = raw_line.strip()
+            if line.startswith("[") and line.endswith("]"):
+                section = line[1:-1]
+            elif section == "Sleep" and line.startswith("MemorySleepMode="):
+                configured = line.split("=", 1)[1].strip()
+    if configured == "s2idle":
+        return Check(
+            "pass",
+            "suspend-mode",
+            f"{selected[0]} is the kernel default; systemd selects s2idle before suspend",
+        )
     return Check(
         "warn",
         "suspend-mode",
@@ -265,7 +281,17 @@ def collect() -> list[Check]:
             "present" if Path("/dev/t2-aks").exists() else "missing",
         )
     )
-    checks.extend(service_check(service) for service in SERVICES)
+    credential_configured = CREDENTIAL.exists()
+    for service in SERVICES:
+        if not credential_configured and service in (
+            "t2-credential-unlock.service",
+            "t2-biometric-ready.service",
+        ):
+            checks.append(
+                Check("pass", service, "not required in manual keybag-unlock mode")
+            )
+        else:
+            checks.append(service_check(service))
     checks.append(dkms_check())
     checks.append(module_build_check())
 
@@ -324,8 +350,16 @@ def collect() -> list[Check]:
                 "present and private" if credential_ok else "missing, empty, or permissive",
             )
         )
+    except FileNotFoundError:
+        checks.append(
+            Check(
+                "warn",
+                "encrypted-credential",
+                "not configured; keybags must be unlocked manually after boot",
+            )
+        )
     except OSError:
-        checks.append(Check("warn", "encrypted-credential", "not readable; run as root"))
+        checks.append(Check("warn", "encrypted-credential", "not readable"))
 
     cached_port = 0
     try:

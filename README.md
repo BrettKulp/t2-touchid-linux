@@ -16,6 +16,7 @@ Read [Before you start](#before-you-start) before installing anything.
 - [Before you start](#before-you-start)
 - [Concepts](#concepts)
 - [Installation](#installation)
+- [Linux bring-up troubleshooting](docs/LINUX_BRINGUP_TROUBLESHOOTING.md)
 - [Verification](#verification)
 - [Recovery and uninstall](#recovery-and-uninstall)
 - [Diagnostics](#diagnostics)
@@ -197,7 +198,18 @@ different state.
    DMA. After `/dev/t2-aks` exists, do not unload the module: reboot before
    rebuilding or replacing it. Re-run the installer after a kernel upgrade.
 5. Place the extracted keybag at `/var/lib/t2-touchid/user.kb`, owned by root
-   and mode `0600`, then start `t2-keybag-load.service`.
+   and mode `0600`. Provision the validated, root-private local Catacomb from
+   the macOS export, then start `t2-keybag-load.service`:
+
+   ```sh
+   sudo t2-touchid-provision-catacomb /private/path/t2-touchid-catacomb.tar.gz
+   ```
+
+   The command rejects symlinks and non-private archives, independently
+   validates all three components, atomically creates the local store, and is
+   idempotent only when an existing store is byte-equal. It does not retain a
+   second raw archive copy. This local baseline is required because fprintd
+   fails closed rather than listing identities from unreconciled SEP state.
 6. Unlock the loaded normal handle and the special user bag with the macOS
    password.
 

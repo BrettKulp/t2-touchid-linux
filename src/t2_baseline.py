@@ -61,6 +61,26 @@ def parse_source_metadata(data: bytes, expected_names: set[str]) -> dict[str, di
     return result
 
 
+def parse_tar_metadata(
+    members: dict[str, tuple[tarfile.TarInfo, bytes]],
+    expected_names: set[str],
+) -> dict[str, dict[str, int]]:
+    """Validate metadata retained by early raw Catacomb exports."""
+    result = {}
+    for name in sorted(expected_names):
+        member, _data = members[name]
+        if (
+            member.uid != 0
+            or member.gid != 0
+            or member.uname not in ("", "root")
+            or member.gname not in ("", "wheel")
+            or member.mode & ~0o777
+        ):
+            raise BaselineError(f"unsafe archived source metadata for {name}")
+        result[name] = {"mode": member.mode, "uid": 0, "gid": 0}
+    return result
+
+
 class KeyedArchive:
     def __init__(self, data: bytes, name: str) -> None:
         try:
@@ -132,8 +152,11 @@ def read_host_archive(path: Path, apple_uid: int) -> dict[str, Any]:
             "archive does not contain exactly master, user, and biolockout components"
         )
     if source_stat is None:
-        raise BaselineError("archive has no live source-stat.txt metadata")
-    source_metadata = parse_source_metadata(source_stat, expected_names)
+        # The original dedicated macOS exporter preserved root:wheel metadata
+        # in tar headers but omitted the later source-stat.txt sidecar.
+        source_metadata = parse_tar_metadata(members, expected_names)
+    else:
+        source_metadata = parse_source_metadata(source_stat, expected_names)
 
     user_name = f"user_{apple_uid:08x}.cat"
     user = KeyedArchive(members[user_name][1], user_name)

@@ -7,6 +7,7 @@ OUTPUT="$SCRIPT_DIR/t2-touchid-catacomb.tar.gz"
 DIAGNOSTIC="$SCRIPT_DIR/t2-touchid-catacomb-diagnostic.tar.gz"
 WORK_DIR="$(mktemp -d /tmp/t2-touchid-catacomb.XXXXXX)"
 PATH_LIST="$WORK_DIR/template-paths.txt"
+SOURCE_STAT="$WORK_DIR/source-stat.txt"
 FREEZE_AND_REBOOT=1
 FROZEN_PID=""
 
@@ -88,7 +89,13 @@ elif [[ -d /Library/Catacomb ]]; then
     sudo kill -STOP "$DAEMON_PID"
     FROZEN_PID="$DAEMON_PID"
   fi
-  sudo tar -C / -czf "$OUTPUT.tmp.$$" Library/Catacomb
+  # Keep independently parseable source ownership/mode evidence alongside the
+  # archive; older exports retained it only in their tar member headers.
+  sudo find /Library/Catacomb -type f \
+    \( -name master.cat -o -name biolockout.cat -o -name 'user_*.cat' \) \
+    -exec stat -f '%Sp %Su:%Sg %z %m %N' {} \; > "$SOURCE_STAT"
+  sudo tar -C / -czf "$OUTPUT.tmp.$$" Library/Catacomb \
+    -C "$WORK_DIR" source-stat.txt
   sudo mv -f -- "$OUTPUT.tmp.$$" "$OUTPUT"
   sudo chmod 600 "$OUTPUT" 2>/dev/null || true
   sync "$OUTPUT" 2>/dev/null || sync

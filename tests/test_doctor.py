@@ -43,6 +43,49 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(check.status, "pass")
         self.assertNotIn("example.service", check.detail)
 
+    def test_manual_unlock_mode_does_not_require_conditional_services(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                mock.patch.object(doctor, "CREDENTIAL", Path(directory) / "missing"),
+                mock.patch.object(doctor, "service_check") as service_check,
+                mock.patch.object(
+                    doctor,
+                    "dkms_check",
+                    return_value=doctor.Check("pass", "dkms", "ok"),
+                ),
+                mock.patch.object(
+                    doctor,
+                    "module_build_check",
+                    return_value=doctor.Check("pass", "build", "ok"),
+                ),
+                mock.patch.object(doctor, "read_assignments", side_effect=OSError),
+                mock.patch.object(
+                    doctor,
+                    "acm_transport_check",
+                    return_value=doctor.Check("pass", "acm", "ok"),
+                ),
+                mock.patch.object(
+                    doctor,
+                    "sleep_mode_check",
+                    return_value=doctor.Check("pass", "sleep", "ok"),
+                ),
+                mock.patch.object(doctor.os, "geteuid", return_value=1),
+            ):
+                service_check.return_value = doctor.Check("pass", "service", "ok")
+                checks = doctor.collect()
+        manual = {
+            check.name: check
+            for check in checks
+            if check.name in (
+                "t2-credential-unlock.service",
+                "t2-biometric-ready.service",
+            )
+        }
+        self.assertTrue(all(check.status == "pass" for check in manual.values()))
+        self.assertTrue(
+            all("manual keybag-unlock" in check.detail for check in manual.values())
+        )
+
     def test_json_shape_contains_no_implicit_identifiers(self):
         check = doctor.Check("pass", "bridge-network", "endpoint reachable")
         encoded = json.dumps({"checks": [doctor.asdict(check)]})

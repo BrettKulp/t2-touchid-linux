@@ -58,7 +58,7 @@ def user_component():
     )
 
 
-def write_archive(path):
+def write_archive(path, *, include_source_stat=True, header_uid=0):
     components = {
         "master.cat": keyed(
             {"CatacombVersion": 0x30000, "CatacombEnrollmentCount": 2},
@@ -72,13 +72,17 @@ def write_archive(path):
             b"-rw-r--r-- root:wheel 100 1 /Library/Catacomb/TEST/biolockout.cat\n"
         ),
     }
+    if not include_source_stat:
+        components.pop("source-stat.txt")
     with tarfile.open(path, "w:gz") as archive:
         for name, data in components.items():
             info = tarfile.TarInfo(f"capture/{name}")
             info.size = len(data)
             info.mode = 0o644
-            info.uid = 0
+            info.uid = header_uid
             info.gid = 0
+            info.uname = "root" if header_uid == 0 else "user"
+            info.gname = "wheel"
             archive.addfile(info, io.BytesIO(data))
 
 
@@ -107,6 +111,23 @@ def live_inventory(identity_uuid=IDENTITY_UUID):
 
 
 class BaselineTests(unittest.TestCase):
+    def test_archive_without_sidecar_uses_validated_tar_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "raw-export.tar.gz"
+            write_archive(path, include_source_stat=False)
+            host = t2_baseline.read_host_archive(path, 501)
+            self.assertEqual(len(host["identity_records"]), 1)
+            self.assertTrue(
+                all(component["uid"] == 0 for component in host["host_components"])
+            )
+
+    def test_archive_without_sidecar_rejects_non_root_tar_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "unsafe-export.tar.gz"
+            write_archive(path, include_source_stat=False, header_uid=501)
+            with self.assertRaises(t2_baseline.BaselineError):
+                t2_baseline.read_host_archive(path, 501)
+
     def test_archive_and_live_inventory_build_valid_journal_baseline(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "capture.tar.gz"
