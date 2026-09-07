@@ -9,9 +9,14 @@ install -d -o root -g root -m 0700 "$backup_dir"
 
 install_one() {
   local source=$2 target=/etc/pam.d/$1 backup=$backup_dir/$1.original
+  local absent=$backup_dir/$1.absent
   [[ -f $source ]] || { echo "Missing template: $source" >&2; exit 1; }
-  if [[ -e $target && ! -e $backup ]]; then
-    install -o root -g root -m 0600 "$target" "$backup"
+  if [[ ! -e $backup && ! -e $absent ]]; then
+    if [[ -e $target ]]; then
+      install -o root -g root -m 0600 "$target" "$backup"
+    else
+      install -o root -g root -m 0600 /dev/null "$absent"
+    fi
   fi
   install -o root -g root -m 0644 "$source" "$target"
 }
@@ -19,6 +24,7 @@ install_one() {
 install_one sudo "$source_dir/pam/sudo"
 if [[ -e /etc/pam.d/omarchy-lock-password ]]; then
   install_one omarchy-lock-password "$source_dir/pam/omarchy-lock-password"
+  install_one omarchy-lock-fingerprint "$source_dir/pam/omarchy-lock-fingerprint"
 fi
 rm -f -- /etc/security/t2-touchid-sudo-prompt
 

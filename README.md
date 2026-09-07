@@ -223,13 +223,17 @@ different state.
    `T2_KEYBAG_HANDLE` is the handle SEP returned for the loaded keybag; it
    changes on every boot. `T2_KEYBAG_SPECIAL` is the special bag from
    `T2_TOUCHID_SPECIAL_BAG` in `/etc/t2-touchid.conf` (`-501` for macOS user
-   `501`). Unlock both, reading the values straight from that file:
+   `501`). Unlock both with the boot-scoped helper:
 
    ```sh
-   sudo sh -c '. /run/t2-touchid/keybag.env
-     /usr/local/sbin/t2-aks-tool unlock-keybag "$T2_KEYBAG_SESSION" "$T2_KEYBAG_HANDLE"
-     /usr/local/sbin/t2-aks-tool unlock-keybag "$T2_KEYBAG_SESSION" "$T2_KEYBAG_SPECIAL"'
+   sudo t2-keybag-unlock
    ```
+
+   The helper validates the root-only runtime values, prompts separately for
+   both unlocks, and records a root-only boot-scoped readiness marker only when
+   both succeed. Before that marker exists, the supplied sudo PAM stack skips
+   fingerprint immediately and asks for the password instead of waiting for a
+   biometric timeout.
 
    To avoid unlocking by hand after every boot, see
    [Unlocking keybags from password authentication](#unlocking-keybags-from-password-authentication)
@@ -248,8 +252,10 @@ different state.
    hides conversation-based `pam_echo` messages, while fprintd 1.94.5's PAM
    client suppresses the ABI-valid `VerifyFingerSelected("any")` prompt when
    multiple identities are available. The message never names one finger
-   because either enrolled identity is valid, and the clamshell guard skips
-   both the message and the fingerprint module when the laptop is closed.
+   because either enrolled identity is valid, and warns not to type until the
+   hidden-input password prompt appears: terminal input can otherwise echo
+   while pam_fprintd owns the sequential PAM transaction. The clamshell guard
+   skips both the message and the fingerprint module when the laptop is closed.
 
 The installer is safe to rerun and replaces only project-managed files. When
 DKMS is available it registers the transport for kernel upgrades; otherwise it
@@ -277,16 +283,18 @@ After making a root-owned backup, add this at the end of the `auth` section in
 auth optional pam_exec.so quiet expose_authtok seteuid /usr/local/sbin/t2-pam-unlock
 ```
 
-Omarchy uses SDDM autologin followed by a separate lock-screen PAM service, so
-the initial desktop password does not traverse `system-auth`. On Omarchy, also
-install `pam/omarchy-lock-password` as `/etc/pam.d/omarchy-lock-password` after
-backing up the existing file. That template contains the same optional hook
-after its successful `pam_faillock.so authsucc` line.
+Omarchy uses SDDM autologin followed by separate unprivileged lock-screen PAM
+services, so the initial desktop password does not traverse `system-auth` and
+cannot execute the root-only keybag helper. Do not add this hook to
+`omarchy-lock-password`; use manual keybag unlock or the encrypted system
+credential described below. The supplied Omarchy password template preserves
+the stock password stack, while `omarchy-lock-fingerprint` provides the
+separate fingerprint path after the keybags are unlocked.
 
-This unlocks the bags on the first successful password authentication through
-an instrumented PAM service after boot. It cannot unlock them before a password
-has been entered. The helper restricts itself to `T2_TOUCHID_USER` from
-`/etc/t2-touchid.conf`.
+For privileged PAM consumers such as sudo, this unlocks the bags on the first
+successful password authentication after boot. It cannot unlock them before a
+password has been entered. The helper restricts itself to `T2_TOUCHID_USER`
+from `/etc/t2-touchid.conf`.
 
 ### Unattended boot unlock
 
