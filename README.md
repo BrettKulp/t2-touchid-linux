@@ -4,13 +4,16 @@ Experimental, fail-closed Touch ID authentication for Intel Macs with an Apple
 T2 chip. It talks to bridgeOS BiometricKit over BridgeXPC and exposes a minimal
 `fprintd`-compatible D-Bus service for PAM clients.
 
-This is research software, not an upstream `libfprint` driver. It has been
-proven on exactly one machine, and macOS remains the recovery environment.
+This is research software, not an upstream `libfprint` driver. The complete
+research workflow has been proven on one machine, while the boot and
+authentication path has been reproduced on a second model. macOS remains the
+recovery environment.
 Read [Before you start](#before-you-start) before installing anything.
 
 ## Contents
 
 - [Status](#status)
+- [Normal operation after setup](#normal-operation-after-setup)
 - [Proven configuration](#proven-configuration)
 - [Prerequisites](#prerequisites)
 - [Before you start](#before-you-start)
@@ -43,6 +46,7 @@ below, and nowhere else.
 | --- | --- | --- |
 | Fingerprint verification through `fprintd` and PAM | Yes, installed and enabled | Yes, including negative controls and password fallback |
 | Keybag unlock (manual, PAM hook, or encrypted credential) | Yes, installed | Yes, including cold boot |
+| Persistent BridgeOS network and boot ordering | Yes, installed and enabled through service dependencies | Yes, including reboot and recovery from the observed SEP timeout race |
 | Diagnostics and identity inventory | Yes, installed | Yes |
 | Enrollment from Linux (`t2-touchid-enroll`) | Yes, separate root-only CLI | Yes, one identity enrolled and re-proven after Linux reboot; a later macOS boot removed it |
 | Label rename (`t2-touchid-manage rename-fprint`) | Yes, separate root-only CLI | Yes |
@@ -56,10 +60,48 @@ below, and nowhere else.
 The `fprintd` service never exposes enrollment or deletion. The experimental
 mutation commands are separate root-only, journaled brokers.
 
+## Normal operation after setup
+
+The default setup does not store either password and does not display a boot
+password prompt. Each Linux boot follows this sequence:
+
+1. `t2-bridge-network.service` detaches the configured T2 `cdc_ncm` interface
+   from NetworkManager, brings up its link-local IPv6 path, and verifies the
+   configured BridgeOS peer.
+2. The biometric BridgeXPC port is refreshed before `t2-sep-transport.service`
+   negotiates with SEP. This ordering avoids the capability timeout observed
+   when discovery and transport startup overlapped.
+3. `t2-keybag-load.service` loads the exported macOS keybag and records its
+   boot-specific handles under `/run/t2-touchid`. The handles are still locked,
+   and fingerprint PAM is deliberately skipped.
+4. The first sudo authentication asks for the Linux password normally. Only
+   after that succeeds, a separate hidden prompt asks for the macOS login
+   password. The passwords are never assumed to match.
+5. The macOS password is used once from locked process memory to unlock both
+   SEP handles. A root-only readiness marker is published for that boot and
+   fprintd is refreshed.
+6. Later sudo requests and the Omarchy lock screen can use Touch ID. Rebooting
+   clears the runtime handles and readiness marker, so the first-sudo sequence
+   repeats.
+
+Cancelling or entering the wrong macOS password does not turn a valid sudo
+password into an authentication failure. Sudo succeeds, Touch ID remains
+unavailable, and the separate macOS prompt is offered after the next successful
+password-authenticated sudo. `sudo t2-keybag-unlock` remains the manual recovery
+path. `t2-interactive-unlock.service` is installed but disabled by default; it
+is only for systems with a working systemd password agent during boot.
+
 ## Proven configuration
 
-Developed and verified on an Intel `MacBookPro16,2`, bridgeOS build `23P1072`,
-BridgeXPC 39, and Omarchy/Arch Linux.
+The complete verification, enrollment, rename, reconciliation, and mutation
+research described below was developed on an Intel `MacBookPro16,2`, bridgeOS
+build `23P1072`, BridgeXPC 39, and Omarchy/Arch Linux.
+
+Persistent BridgeOS networking, ordered port/transport startup, keybag loading,
+the separate Linux/macOS first-sudo prompts, sudo Touch ID, and Omarchy lock
+screen Touch ID were additionally verified on an Intel `MacBookPro15,2` with
+bridgeOS build `23P350`. This does not imply that enrollment, deletion, or every
+research command has been validated on that second model.
 
 A positive right-index control and a negative unenrolled-finger control were
 both verified at the raw bridge, `fprintd`, and sudo/PAM layers. After the
@@ -79,8 +121,9 @@ boundary and its host-only recovery are documented below.
 
 **Hardware and firmware**
 
-- An Intel Mac with an Apple T2 chip. Only `MacBookPro16,2` on bridgeOS
-  `23P1072` has been tested.
+- An Intel Mac with an Apple T2 chip. Full research coverage is limited to
+  `MacBookPro16,2` on bridgeOS `23P1072`; the authentication path is also
+  verified on `MacBookPro15,2` on bridgeOS `23P350`.
 - macOS still installed on the same machine, with at least one enrolled
   finger. macOS is both the source of the exported keybags and the recovery
   environment.
@@ -125,7 +168,9 @@ document. Read these first:
 - **PAM changes can lock you out.** Install the PAM templates only after both
   the positive and negative fingerprint controls pass, keep a root shell open
   while you test, and remember that `sudo tools/rollback-pam.sh` restores the
-  originals from `/var/lib/t2-touchid/pam-backups`.
+  unchanged project-managed stacks and removes the project hook from
+  `system-auth` without discarding unrelated later edits. Backups are kept in
+  `/var/lib/t2-touchid/pam-backups`.
 - **Use `s2idle`, not `deep`.** The installer selects the live-proven mode with
   a systemd sleep drop-in. Deep-S3 resume still breaks T2 communication until
   reboot on the proven machine; see [Suspend/resume](#suspendresume).
@@ -186,13 +231,18 @@ different state.
 1. Keep macOS available and enroll exactly the finger you intend to use.
 2. Run the export helpers in `tools/macos/` from macOS and transfer the outputs
    privately. Never commit or publish them.
-3. On Linux, identify the T2 USB-network interface and its link-local IPv6
-   address, then run `sudo ./install.sh`. Edit `/etc/t2-touchid.conf` when
-   prompted, including the numeric macOS user ID and its corresponding special
-   bag.
-4. Start `t2-sep-transport.service`. The installer builds the module for the
-   running kernel and configures PCI autoload with `register_ool=1` and the
-   read-only `probe_capabilities=1` endpoint negotiation. The loader
+3. On Linux, identify the T2 USB-network interface and BridgeOS link-local IPv6
+   peer, then run `sudo ./install.sh`. Edit `/etc/t2-touchid.conf` when prompted,
+   including the interface, peer, numeric macOS user ID, and corresponding
+   special bag. Once configured, `t2-bridge-network.service` prepares this path
+   automatically and keeps NetworkManager from racing it.
+4. Start `t2-sep-transport.service` for initial bring-up. The installer builds
+   the module for the running kernel and enables ordered startup for later
+   boots. PCI autoload remains observation-only; the service loader requests
+   `register_ool=1` and `probe_capabilities=1` only after BridgeOS port discovery
+   completes. Neither option is configured for early modalias autoload because
+   early capability negotiation caused a persistent `-110` timeout before
+   BridgeOS was ready. The loader
    accepts an already operational module and can safely replace an early
    observation-only instance; it never unloads an instance that registered SEP
    DMA. After `/dev/t2-aks` exists, do not unload the module: reboot before
@@ -240,9 +290,11 @@ different state.
    fingerprint immediately and asks for the password instead of waiting for a
    biometric timeout.
 
-   To avoid unlocking by hand after every boot, see
+   After PAM is installed, manual unlocking is no longer the normal boot
+   workflow. See
    [Unlocking keybags from password authentication](#unlocking-keybags-from-password-authentication)
-   or [Unattended boot unlock](#unattended-boot-unlock).
+   for the default first-sudo path, or [Unattended boot unlock](#unattended-boot-unlock)
+   for its higher-risk stored-credential alternative.
 
 7. Start `fprintd.service` and run the controls under
    [Verification](#verification).
@@ -282,10 +334,12 @@ the environment, logs, or persistent storage. The helper reads the boot-specific
 handle recorded under `/run` by `t2-keybag-load.service` and always exits
 successfully, so a T2 failure cannot block password authentication.
 
-The PAM installer places this hook in `system-auth` after successful password
-authentication and preserves the original file for rollback:
+The PAM installer validates the known Arch `system-auth` ordering, then places
+a sudo-only gate and unlock hook after `pam_faillock.so authsucc`. It refuses to
+patch unfamiliar or administrator-modified stacks and preserves rollback state:
 
 ```text
+auth [success=ignore default=1] pam_succeed_if.so quiet service = sudo
 auth optional pam_exec.so quiet seteuid /usr/local/sbin/t2-pam-unlock
 ```
 
@@ -297,10 +351,11 @@ credential described below. The supplied Omarchy password template preserves
 the stock password stack, while `omarchy-lock-fingerprint` provides the
 separate fingerprint path after the keybags are unlocked.
 
-For privileged PAM consumers such as sudo, this unlocks the bags on the first
-successful password authentication after boot. It cannot unlock them before a
-password has been entered. The helper restricts itself to `T2_TOUCHID_USER`
-from `/etc/t2-touchid.conf`.
+Only sudo reaches the helper. It unlocks the bags after the first successful
+Linux password authentication and separate macOS password prompt after boot.
+It cannot touch SEP after an incorrect Linux password. The helper also checks
+`PAM_SERVICE=sudo` and restricts itself to `T2_TOUCHID_USER` from
+`/etc/t2-touchid.conf`.
 
 ### Unattended boot unlock
 
@@ -894,9 +949,10 @@ deep sleep was entered accidentally, the known recovery is:
 
 ## Reporting compatibility
 
-This has been proven on exactly one machine, so reports from other models are
-the most useful contribution available. If you try this on different hardware,
-a bridgeOS build, or another distribution, please open an issue with:
+The complete research workflow has been proven on one machine, and the core
+boot/authentication workflow on a second model. Reports from other models are
+still the most useful contribution available. If you try this on different
+hardware, a bridgeOS build, or another distribution, please open an issue with:
 
 - the Mac model identifier, the bridgeOS build, and the BridgeXPC version;
 - the Linux distribution, kernel version, T2 stack (`t2bce`/`apple-bce`), and

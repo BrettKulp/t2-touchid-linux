@@ -3,7 +3,8 @@
 This project is experimental authentication software. Keep password login and
 an already-authenticated recovery terminal available while changing PAM.
 
-It has been proven on exactly one machine; see the README's
+The complete research workflow has been proven on one machine and the core
+boot/authentication workflow on a second model; see the README's
 [proven configuration](README.md#proven-configuration) and
 [status table](README.md#status) for what is exposed and what has actually been
 tested on hardware.
@@ -29,12 +30,15 @@ tested on hardware.
 
 ## Password and keybag material
 
-The macOS keybag and login password are authentication secrets. The PAM helper
-receives a password over stdin and does not put it in argv, the environment, or
+The macOS keybag and login password are authentication secrets. After sudo
+validates the Linux password, the PAM helper asks separately for the macOS
+password through a validated terminal. It keeps the password in locked process
+memory and does not put it in argv, the environment, persistent storage, or
 logs. The optional systemd credential is encrypted at rest, but on a machine
 without a TPM its host-key protection does not defend against a root attacker
-or an attacker who can decrypt the Linux filesystem. Reusing the same password
-for Linux and macOS increases the impact of either environment being breached.
+or an attacker who can decrypt the Linux filesystem. Linux and macOS passwords
+are not assumed to match; reusing one password still increases the impact of
+either environment being breached.
 
 Private files must be root-owned and inaccessible to group/other. Never publish
 keybags, catacombs, credentials, captures, device identifiers, UUIDs, raw
