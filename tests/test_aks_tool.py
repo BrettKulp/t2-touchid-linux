@@ -11,6 +11,23 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class AKSToolTests(unittest.TestCase):
+    def test_two_keybag_unlock_hardens_and_wipes_one_secret(self) -> None:
+        source = (ROOT / "src/t2-aks-tool.c").read_text(encoding="utf-8")
+
+        self.assertIn("unlock-keybags-stdin", source)
+        self.assertIn("setrlimit(RLIMIT_CORE", source)
+        self.assertIn("prctl(PR_SET_DUMPABLE", source)
+        self.assertIn("mlock(secret, size)", source)
+        self.assertIn("mlock(request, exchange.request_length)", source)
+        self.assertIn("explicit_bzero(secret, sizeof(secret))", source)
+        self.assertIn("munlock(request, exchange.request_length)", source)
+        self.assertIn("munlock(secret, sizeof(secret))", source)
+        self.assertIn("static ssize_t read_secret_line", source)
+        self.assertIn("if (errno == EINTR)", source)
+        self.assertIn('getenv("PAM_TTY")', source)
+        self.assertIn("O_NOFOLLOW", source)
+        self.assertIn("S_ISCHR", source)
+
     def test_verify_password_acm_wire_layout(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / "t2-aks-tool-unit"

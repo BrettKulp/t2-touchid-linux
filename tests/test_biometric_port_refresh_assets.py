@@ -13,9 +13,51 @@ class BiometricPortRefreshAssetTests(unittest.TestCase):
         for asset in (
             "t2-biometric-port-refresh.service",
             "t2-biometric-port-refresh",
+            "t2-bridge-network-prepare",
         ):
             self.assertIn(asset, installer)
             self.assertIn(asset, uninstaller)
+        self.assertTrue(
+            (ROOT / "systemd/system/t2-bridge-network.service").is_file()
+        )
+        self.assertIn("t2-bridge-network.service", uninstaller)
+
+    def test_network_preparation_precedes_port_discovery(self):
+        service = (
+            ROOT / "systemd/system/t2-biometric-port-refresh.service"
+        ).read_text(encoding="utf-8")
+        network = (ROOT / "systemd/system/t2-bridge-network.service").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("Requires=t2-bridge-network.service", service)
+        self.assertIn("After=t2-bridge-network.service", service)
+        self.assertIn("Before=network-online.target", network)
+
+    def test_port_discovery_finishes_before_transport_attempt(self):
+        transport = (ROOT / "systemd/system/t2-sep-transport.service").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("After=local-fs.target t2-biometric-port-refresh.service", transport)
+
+    def test_network_helper_is_private_and_configuration_driven(self):
+        helper = (ROOT / "src/t2-bridge-network-prepare.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("T2_TOUCHID_INTERFACE", helper)
+        self.assertIn("T2_TOUCHID_HOST", helper)
+        self.assertIn('driver == cdc_ncm', helper)
+        self.assertIn('nmcli device set "$interface" managed no', helper)
+        self.assertIn("ipaddress.IPv6Address", helper)
+        self.assertIn("value.is_link_local", helper)
+        self.assertIn("network-manager-detached", helper)
+        self.assertIn("restore_network_manager", helper)
+        self.assertIn('printf \'%s\\n\' "$interface" >"$nm_marker"', helper)
+        self.assertLess(helper.index("case ${1:-prepare}"), helper.index("[[ -r $config_file ]]"))
+        self.assertNotIn("enp2s0f1u1", helper)
+        self.assertNotIn("fe80::c908", helper)
 
 
 if __name__ == "__main__":

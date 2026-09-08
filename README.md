@@ -229,9 +229,14 @@ different state.
    sudo t2-keybag-unlock
    ```
 
-   The helper validates the root-only runtime values, prompts separately for
-   both unlocks, and records a root-only boot-scoped readiness marker only when
-   both succeed. Before that marker exists, the supplied sudo PAM stack skips
+   The helper validates the root-only runtime values, asks once through
+   `systemd-ask-password`, and uses that in-memory secret for both unlocks. Its
+   C helper disables dumps, locks the password buffer in RAM, and explicitly
+   wipes it after both requests; the password is never placed in argv, the
+   environment, or persistent storage. A root-only boot-scoped readiness marker
+   is recorded only when both unlocks succeed. The helper also restarts fprintd
+   when the daemon is already active, so no separate service restart is normally
+   needed. Before that marker exists, the supplied sudo PAM stack skips
    fingerprint immediately and asks for the password instead of waiting for a
    biometric timeout.
 
@@ -269,18 +274,19 @@ uses the same bounded user-bus rule after removing the feedback units.
 
 ### Unlocking keybags from password authentication
 
-If the macOS and Linux login passwords are identical, PAM can pass the password
-already entered by the user to the keybag unlock helper. The password is kept
-only in process memory and is not placed in argv, the environment, logs, or
-persistent storage. The helper reads the boot-specific handle recorded under
-`/run` by `t2-keybag-load.service` and always exits successfully, so a T2
-failure cannot block password authentication.
+Linux and macOS passwords are treated as separate credentials. On the first
+sudo after boot, PAM validates the Linux password normally and then the helper
+asks separately for the macOS password used to unlock both T2 keybags. The
+macOS password is kept only in locked process memory and is not placed in argv,
+the environment, logs, or persistent storage. The helper reads the boot-specific
+handle recorded under `/run` by `t2-keybag-load.service` and always exits
+successfully, so a T2 failure cannot block password authentication.
 
-After making a root-owned backup, add this at the end of the `auth` section in
-`/etc/pam.d/system-auth`, after the successful `pam_faillock.so authsucc` line:
+The PAM installer places this hook in `system-auth` after successful password
+authentication and preserves the original file for rollback:
 
 ```text
-auth optional pam_exec.so quiet expose_authtok seteuid /usr/local/sbin/t2-pam-unlock
+auth optional pam_exec.so quiet seteuid /usr/local/sbin/t2-pam-unlock
 ```
 
 Omarchy uses SDDM autologin followed by separate unprivileged lock-screen PAM
@@ -317,6 +323,22 @@ systemd's host key. That protects against casual or offline disclosure without
 the decrypted Linux filesystem, but root can decrypt it. Since the credential
 is also the Linux and macOS login password on the proven configuration,
 understand this tradeoff before provisioning it.
+
+### Interactive boot unlock without stored credentials
+
+`t2-interactive-unlock.service` is an optional boot path when no encrypted
+credential exists. After the keybag is loaded, it asks once through
+the active systemd password agent and streams the answer directly into the
+hardened two-keybag unlock operation. No recoverable password is retained after
+the service exits. If no password agent is available or the prompt is cancelled,
+the service fails after a bounded wait, password authentication remains usable,
+and `sudo t2-keybag-unlock` can be run later from a terminal.
+
+Enable it explicitly only if a systemd password agent is available during boot:
+
+```sh
+sudo systemctl enable t2-interactive-unlock.service
+```
 
 At boot, `t2-biometric-port-refresh.service` waits for the T2 network path and
 refreshes the dynamic RemoteXPC port independently of keybag readiness. With

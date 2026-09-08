@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=Prompt once to unlock Apple T2 keybags for this boot
+Requires=t2-keybag-load.service
+After=t2-keybag-load.service
+ConditionPathExists=!/etc/credstore.encrypted/t2-touchid-password
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/t2-keybag-unlock
+RemainAfterExit=yes
+TimeoutStartSec=150
+UMask=0077
+LimitCORE=0
+LimitMEMLOCK=65536
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/run/t2-touchid
+DevicePolicy=closed
+DeviceAllow=/dev/t2-aks rw
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectKernelModules=yes
+RestrictRealtime=yes
+RestrictAddressFamilies=AF_UNIX AF_LOCAL AF_NETLINK
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

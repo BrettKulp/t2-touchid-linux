@@ -4,6 +4,7 @@
 #undef main
 
 #include <assert.h>
+#include <sys/wait.h>
 
 int main(void)
 {
@@ -14,6 +15,27 @@ int main(void)
 	};
 	unsigned char *request = NULL;
 	uint32_t request_length = 0;
+	char line[32] = { 0 };
+	int pipefd[2], status;
+	pid_t writer;
+
+	assert(pipe(pipefd) == 0);
+	writer = fork();
+	assert(writer >= 0);
+	if (!writer) {
+		close(pipefd[0]);
+		assert(write(pipefd[1], "sec", 3) == 3);
+		usleep(10000);
+		assert(write(pipefd[1], "ret\n", 4) == 4);
+		close(pipefd[1]);
+		_exit(0);
+	}
+	close(pipefd[1]);
+	assert(read_secret_line(pipefd[0], line, sizeof(line)) == 7);
+	assert(!strcmp(line, "secret\n"));
+	close(pipefd[0]);
+	assert(waitpid(writer, &status, 0) == writer);
+	assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 
 	assert(build_verify_password_acm_request(1, -501, secret,
 						 sizeof(secret), context, &request,

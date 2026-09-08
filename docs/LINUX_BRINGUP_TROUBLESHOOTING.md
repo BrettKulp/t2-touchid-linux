@@ -20,6 +20,10 @@ Catacomb files, and exported archives private.
 - Do not repeatedly restart BiometricKit port discovery. A repeated
   high-concurrency RemoteXPC scan triggered a `cdc_ncm` watchdog followed by an
   `apple_bce` kernel failure on the tested MacBookPro15,2.
+- Do not overlap boot-time port discovery with SEP capability negotiation. On
+  the tested machine that race produced capability timeout `-110`, pinning the
+  transport without `/dev/t2-aks` for the rest of the boot. The installed units
+  order transport after port discovery.
 
 ## Prevent an early transport attempt
 
@@ -62,7 +66,9 @@ not elapsed Linux uptime.
 
 ## Stabilize BridgeOS networking
 
-The T2 `cdc_ncm` interface may be repeatedly managed and disconnected by
+The installed `t2-bridge-network.service` now performs this preparation before
+boot-time port discovery. During an older install or manual recovery, the T2
+`cdc_ncm` interface may be repeatedly managed and disconnected by
 NetworkManager because BridgeOS does not provide normal DHCP. Substitute the
 interface and Linux link-local address determined for the machine:
 

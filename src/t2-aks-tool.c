@@ -6,6 +6,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <sys/prctl.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -332,8 +336,8 @@ static int set_system_keybag(int fd, const char *session_text,
 	return get_le32(response) ? 1 : 0;
 }
 
-static int unlock_keybag(int fd, const char *session_text,
-			 const char *handle_text, int password_stdin)
+static int unlock_keybag_secret(int fd, uint64_t session, int32_t handle,
+				const char *secret, size_t length)
 {
 	unsigned char *request = NULL;
 	unsigned char response[64] = { 0 };
@@ -342,30 +346,144 @@ static int unlock_keybag(int fd, const char *session_text,
 		.response_capacity = sizeof(response),
 		.response = (uintptr_t)response,
 	};
+	size_t padded_length = (length + 3) & ~(size_t)3;
+	int ret = 1;
+
+	request = calloc(1, 24 + padded_length);
+	if (!request) {
+		perror("allocate unlock request");
+		return 1;
+	}
+	exchange.request_length = 24 + (uint32_t)padded_length;
+	if (mlock(request, exchange.request_length) < 0) {
+		perror("protect unlock request memory");
+		explicit_bzero(request, exchange.request_length);
+		free(request);
+		return 1;
+	}
+	/* result, session, handle, lock-state=0 (unlock), then secret blob. */
+	put_le64(request + 4, session);
+	put_le32(request + 12, (uint32_t)handle);
+	/* request + 16 remains the zero lock-state word. */
+	put_le32(request + 20, (uint32_t)length);
+	memcpy(request + 24, secret, length);
+	exchange.request = (uintptr_t)request;
+	if (ioctl(fd, T2_AKS_IOC_EXCHANGE, &exchange) < 0) {
+		perror("T2_AKS_IOC_EXCHANGE");
+		goto out;
+	}
+	if (exchange.response_length < 4) {
+		fprintf(stderr, "short unlock response: %u bytes\n",
+			exchange.response_length);
+		goto out;
+	}
+	printf("status=%#x response_length=%u\n", get_le32(response),
+	       exchange.response_length);
+	ret = get_le32(response) ? 1 : 0;
+out:
+	explicit_bzero(request, exchange.request_length);
+	munlock(request, exchange.request_length);
+	free(request);
+	explicit_bzero(response, sizeof(response));
+	return ret;
+}
+
+static int protect_secret_buffer(char *secret, size_t size)
+{
+	struct rlimit no_core = { 0, 0 };
+
+	if (setrlimit(RLIMIT_CORE, &no_core) < 0 ||
+	    prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) < 0 || mlock(secret, size) < 0) {
+		perror("protect password memory");
+		return -1;
+	}
+	return 0;
+}
+
+static ssize_t read_secret_line(int fd, char *secret, size_t capacity)
+{
+	size_t used = 0;
+
+	while (used < capacity - 1) {
+		ssize_t got = read(fd, secret + used, capacity - 1 - used);
+
+		if (got < 0) {
+			if (errno == EINTR)
+				continue;
+			return -1;
+		}
+		if (!got)
+			break;
+		used += (size_t)got;
+		if (memchr(secret, '\n', used) || memchr(secret, '\r', used))
+			break;
+	}
+	secret[used] = '\0';
+	if (used == capacity - 1 && !memchr(secret, '\n', used) &&
+	    !memchr(secret, '\r', used)) {
+		errno = EOVERFLOW;
+		return -1;
+	}
+	return (ssize_t)used;
+}
+
+static int open_password_tty(void)
+{
+	const char *path;
+	const char *digit;
+	struct stat status;
+	int tty;
+
+	tty = open("/dev/tty", O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+	if (tty >= 0)
+		return tty;
+	path = getenv("PAM_TTY");
+	if (!path)
+		return -1;
+	if (!strncmp(path, "/dev/pts/", 9))
+		digit = path + 9;
+	else if (!strncmp(path, "/dev/tty", 8))
+		digit = path + 8;
+	else
+		return -1;
+	if (!*digit)
+		return -1;
+	for (; *digit; digit++)
+		if (*digit < '0' || *digit > '9')
+			return -1;
+	tty = open(path, O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+	if (tty < 0)
+		return -1;
+	if (fstat(tty, &status) < 0 || !S_ISCHR(status.st_mode) || !isatty(tty)) {
+		close(tty);
+		errno = ENOTTY;
+		return -1;
+	}
+	return tty;
+}
+
+static int unlock_keybag(int fd, const char *session_text,
+			 const char *handle_text, int password_stdin)
+{
 	struct termios old_term, noecho_term;
 	uint64_t session;
-	long handle;
-	char *end = NULL;
-	char secret[1024];
-	size_t length, padded_length;
+	int32_t handle;
+	char secret[1024] = { 0 };
+	size_t length;
 	int tty = -1, ret = 1;
 	ssize_t got;
 
-	memset(secret, 0, sizeof(secret));
-	if (parse_u64(session_text, &session)) {
+	if (parse_u64(session_text, &session) ||
+	    parse_handle(handle_text, &handle)) {
 		fprintf(stderr, "invalid session or handle\n");
 		return 2;
 	}
-	errno = 0;
-	handle = strtol(handle_text, &end, 0);
-	if (errno || !end || *end || handle < INT32_MIN || handle > INT32_MAX) {
-		fprintf(stderr, "invalid session or handle\n");
-		return 2;
-	}
+	if (protect_secret_buffer(secret, sizeof(secret)))
+		return 1;
 	if (password_stdin) {
 		tty = STDIN_FILENO;
 	} else {
-		tty = open("/dev/tty", O_RDWR | O_CLOEXEC);
+		tty = open_password_tty();
 		if (tty < 0 || tcgetattr(tty, &old_term)) {
 			perror("open controlling terminal");
 			goto out;
@@ -382,7 +500,7 @@ static int unlock_keybag(int fd, const char *session_text,
 			goto out;
 		}
 	}
-	got = read(tty, secret, sizeof(secret) - 1);
+	got = read_secret_line(tty, secret, sizeof(secret));
 	if (!password_stdin) {
 		tcsetattr(tty, TCSAFLUSH, &old_term);
 		if (write(tty, "\n", 1) != 1)
@@ -397,39 +515,75 @@ static int unlock_keybag(int fd, const char *session_text,
 		fprintf(stderr, "empty password\n");
 		goto out;
 	}
-	padded_length = (length + 3) & ~(size_t)3;
-	request = calloc(1, 24 + padded_length);
-	if (!request) {
-		perror("allocate unlock request");
-		goto out;
-	}
-	/* result, session, handle, lock-state=0 (unlock), then secret blob. */
-	put_le64(request + 4, session);
-	put_le32(request + 12, (uint32_t)(int32_t)handle);
-	/* request + 16 remains the zero lock-state word. */
-	put_le32(request + 20, (uint32_t)length);
-	memcpy(request + 24, secret, length);
-	exchange.request_length = 24 + (uint32_t)padded_length;
-	exchange.request = (uintptr_t)request;
-	if (ioctl(fd, T2_AKS_IOC_EXCHANGE, &exchange) < 0) {
-		perror("T2_AKS_IOC_EXCHANGE");
-		goto out;
-	}
-	if (exchange.response_length < 4) {
-		fprintf(stderr, "short unlock response: %u bytes\n",
-			exchange.response_length);
-		goto out;
-	}
-	printf("status=%#x response_length=%u\n", get_le32(response),
-	       exchange.response_length);
-	ret = get_le32(response) ? 1 : 0;
+	ret = unlock_keybag_secret(fd, session, handle, secret, length);
 out:
-	if (request) {
-		memset(request, 0, exchange.request_length);
-		free(request);
-	}
-	memset(secret, 0, sizeof(secret));
+	explicit_bzero(secret, sizeof(secret));
+	munlock(secret, sizeof(secret));
 	if (tty >= 0 && !password_stdin)
+		close(tty);
+	return ret;
+}
+
+static int unlock_keybags(int fd, const char *session_text,
+			  const char *normal_text, const char *special_text,
+			  int password_stdin)
+{
+	struct termios old_term, noecho_term;
+	uint64_t session;
+	int32_t normal, special;
+	char secret[1024] = { 0 };
+	size_t length;
+	int tty = STDIN_FILENO;
+	ssize_t got;
+	int ret = 1;
+
+	if (parse_u64(session_text, &session) || parse_handle(normal_text, &normal) ||
+	    parse_handle(special_text, &special) || normal == special) {
+		fprintf(stderr, "invalid session or handles\n");
+		return 2;
+	}
+	if (protect_secret_buffer(secret, sizeof(secret)))
+		return 1;
+	if (!password_stdin) {
+		tty = open_password_tty();
+		if (tty < 0 || tcgetattr(tty, &old_term)) {
+			perror("open controlling terminal");
+			goto out;
+		}
+		noecho_term = old_term;
+		noecho_term.c_lflag &= ~(ECHO);
+		if (tcsetattr(tty, TCSAFLUSH, &noecho_term)) {
+			perror("disable terminal echo");
+			goto out;
+		}
+		if (write(tty, "macOS login password for T2 Touch ID: ", 38) != 38) {
+			perror("write prompt");
+			tcsetattr(tty, TCSAFLUSH, &old_term);
+			goto out;
+		}
+	}
+	got = read_secret_line(tty, secret, sizeof(secret));
+	if (!password_stdin) {
+		tcsetattr(tty, TCSAFLUSH, &old_term);
+		if (write(tty, "\n", 1) != 1)
+			perror("write newline");
+	}
+	if (got <= 0) {
+		fprintf(stderr, "failed to read password\n");
+		goto out;
+	}
+	length = strcspn(secret, "\r\n");
+	if (!length) {
+		fprintf(stderr, "empty password\n");
+		goto out;
+	}
+	ret = unlock_keybag_secret(fd, session, normal, secret, length);
+	if (!ret)
+		ret = unlock_keybag_secret(fd, session, special, secret, length);
+out:
+	explicit_bzero(secret, sizeof(secret));
+	munlock(secret, sizeof(secret));
+	if (!password_stdin && tty >= 0)
 		close(tty);
 	return ret;
 }
@@ -857,6 +1011,8 @@ int main(int argc, char **argv)
 	if (!((argc == 2 && !strcmp(argv[1], "capabilities")) ||
 	      ((argc == 3 || argc == 4) && !strcmp(argv[1], "load-keybag")) ||
 	      (argc == 5 && !strcmp(argv[1], "set-system-keybag")) ||
+	      (argc == 5 && (!strcmp(argv[1], "unlock-keybags") ||
+	                     !strcmp(argv[1], "unlock-keybags-stdin"))) ||
 	      (argc == 4 && (!strcmp(argv[1], "unlock-keybag") ||
 	                     !strcmp(argv[1], "unlock-keybag-stdin"))) ||
 	      (argc == 4 && (!strcmp(argv[1], "verify-password-acm") ||
@@ -871,6 +1027,8 @@ int main(int argc, char **argv)
 			"Usage: %s capabilities\n"
 			"       %s load-keybag INPUT [SESSION]\n"
 			"       %s set-system-keybag SESSION HANDLE SPECIAL\n"
+			"       %s unlock-keybags SESSION NORMAL SPECIAL\n"
+			"       %s unlock-keybags-stdin SESSION NORMAL SPECIAL\n"
 			"       %s unlock-keybag SESSION HANDLE\n"
 			"       %s unlock-keybag-stdin SESSION HANDLE\n"
 			"       %s verify-password-acm SESSION HANDLE < CONTEXT_16_BYTES\n"
@@ -882,7 +1040,8 @@ int main(int argc, char **argv)
 			"       %s get-device-state HANDLE SELECTOR OUTPUT\n"
 			"       %s get-device-state-v1 SESSION HANDLE SELECTOR OUTPUT\n",
 			argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0],
-			argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
+			argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0],
+			argv[0]);
 		return 2;
 	}
 	fd = open("/dev/t2-aks", O_RDWR | O_CLOEXEC);
@@ -896,6 +1055,10 @@ int main(int argc, char **argv)
 		ret = load_keybag(fd, argv[2], argc == 4 ? argv[3] : NULL);
 	else if (!strcmp(argv[1], "set-system-keybag"))
 		ret = set_system_keybag(fd, argv[2], argv[3], argv[4]);
+	else if (!strcmp(argv[1], "unlock-keybags") ||
+		 !strcmp(argv[1], "unlock-keybags-stdin"))
+		ret = unlock_keybags(fd, argv[2], argv[3], argv[4],
+				     !strcmp(argv[1], "unlock-keybags-stdin"));
 	else if (!strcmp(argv[1], "unlock-keybag"))
 		ret = unlock_keybag(fd, argv[2], argv[3], 0);
 	else if (!strcmp(argv[1], "unlock-keybag-stdin"))
