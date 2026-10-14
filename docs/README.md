@@ -13,6 +13,7 @@ fingerprint management.
 | [fprintd integration](FPRINT_INTEGRATION.md) | D-Bus clients, caller authorization, enrollment, matching, and deletion. |
 | [Administration](ADMINISTRATION.md) | Product command scope and the macOS `bioutil` comparison. |
 | [Compatibility](COMPATIBILITY.md) | Hardware and protocol portability, tested scope, and evidence for new models. |
+| [MacBook Air 2020 report](MACBOOKAIR9_1.md) | Linux-only MacBookAir9,1 setup on bridgeOS 23P2048 using creation version 4, with reported authentication results and limits. |
 | [Prepared-identity measurements](evaluations/touchid-prepared-identity-2026-09-17.md) | Current reader-readiness gains, repeated-touch correctness, hardware controls, and validation limits. |
 | [Worker-overlap measurements](evaluations/touchid-responsiveness-worker-overlap-2026-09-17.md) | Measured retry-readiness improvement, memory cost, and remaining authorization latency. |
 | [Sleep policy](SLEEP_POLICY.md) | Retiring the legacy sleep override, ownership, and suspend qualification limits. |
