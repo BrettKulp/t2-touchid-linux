@@ -90,6 +90,7 @@ class CatacombSyncJournalTests(unittest.TestCase):
         )
         self.assertIs(final.phase, sync.CatacombSyncPhase.OUTCOME_UNKNOWN)
         self.assertTrue(registry.scan(self.root)[0].blocks_new_mutation)
+        before = self.path.read_bytes()
         with self.assertRaises(sync.CatacombSyncJournalError):
             sync.append_checked(
                 self.path,
@@ -97,6 +98,40 @@ class CatacombSyncJournalTests(unittest.TestCase):
                 "CATACOMB_SYNC_RECONCILED",
                 {},
             )
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertIs(sync.read(self.path).phase, sync.CatacombSyncPhase.OUTCOME_UNKNOWN)
+        self.assertTrue(registry.scan(self.root)[0].blocks_new_mutation)
+
+    def test_malformed_host_commit_does_not_change_the_journal(self):
+        self.intent()
+        before = self.path.read_bytes()
+        with self.assertRaises(sync.CatacombSyncJournalError):
+            sync.append_checked(
+                self.path,
+                self.operation_id,
+                "CATACOMB_SYNC_HOST_COMMITTED",
+                {},
+            )
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertIs(sync.read(self.path).phase, sync.CatacombSyncPhase.INTENT)
+        self.assertTrue(registry.scan(self.root)[0].blocks_new_mutation)
+
+    def test_out_of_order_append_leaves_the_baseline_usable(self):
+        before = self.path.read_bytes()
+        with self.assertRaises(sync.CatacombSyncJournalError):
+            sync.append_checked(
+                self.path,
+                self.operation_id,
+                "CATACOMB_SYNC_HOST_COMMITTED",
+                {
+                    "connection_generation": baseline()["connection_generation"],
+                    "final_component_snapshot_sha256": "5" * 64,
+                    "secure_blob_snapshot_sha256": "6" * 64,
+                },
+            )
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertIs(sync.read(self.path).phase, sync.CatacombSyncPhase.BASELINE)
+        self.assertIs(self.intent().phase, sync.CatacombSyncPhase.INTENT)
 
     def test_pre_dispatch_abort_is_terminal(self):
         self.intent()

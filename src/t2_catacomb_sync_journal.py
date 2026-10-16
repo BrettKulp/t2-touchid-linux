@@ -287,9 +287,20 @@ def append_checked(
     milestone: str,
     evidence: dict[str, Any],
 ) -> CatacombSyncHistory:
-    before = read(path)
+    try:
+        records = t2_mutation_journal.read(path)
+        before = validate_history(records)
+    except t2_mutation_journal.JournalError as error:
+        raise CatacombSyncJournalError("Catacomb sync journal is invalid") from error
     if before.operation_id != operation_id:
         raise CatacombSyncJournalError("Catacomb sync operation ID changed")
+    candidate = {
+        "operation_id": operation_id,
+        "milestone": milestone,
+        "evidence": evidence,
+        "record_hash": "0" * 64,
+    }
+    validate_history([*records, candidate])
     try:
         t2_mutation_journal.append(
             path,
