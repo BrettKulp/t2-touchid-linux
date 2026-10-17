@@ -267,6 +267,42 @@ class ExternalDeleteJournalTests(unittest.TestCase):
                 self.assertEqual(current.phase, reconcile.ExternalDeletePhase.INTENT)
                 self.assertTrue(registry.blocks_new_mutation(root))
 
+    def test_torn_tail_is_repaired_without_appending_rejected_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            operation_id = "00000000-0000-0000-0000-000000000090"
+            path = root / f"{operation_id}.jsonl"
+            reconcile.create_journal(path, operation_id, baseline_evidence())
+            baseline_records = mutation.read(path)
+            torn_tail = b'{"milestone":'
+            with path.open("ab") as stream:
+                stream.write(torn_tail)
+            with self.assertRaises(reconcile.ExternalDeleteReconcileError):
+                reconcile.append_checked(path, operation_id, "EXTERNAL_DELETE_INTENT", {})
+
+            records = mutation.validate_records(path.read_bytes().splitlines(keepends=True))
+            self.assertEqual(records[:-1], baseline_records)
+            self.assertEqual(records[-1]["milestone"], "TORN_TAIL_TRUNCATED")
+            self.assertEqual(records[-1]["evidence"], {"truncated_bytes": len(torn_tail)})
+            repaired = reconcile.validate_history(records)
+            self.assertEqual(repaired.phase, reconcile.ExternalDeletePhase.BASELINE)
+            self.assertFalse(registry.blocks_new_mutation(root))
+            current = reconcile.append_checked(
+                path,
+                operation_id,
+                "EXTERNAL_DELETE_INTENT",
+                {
+                    "connection_generation": baseline_evidence()["connection_generation"],
+                    "staged_user_sha256": "9" * 64,
+                    "survivor_snapshot_sha256": "5" * 64,
+                    "identity_count": 1,
+                    "sep_mutation_performed": False,
+                },
+            )
+            self.assertEqual(current.phase, reconcile.ExternalDeletePhase.INTENT)
+            self.assertTrue(registry.blocks_new_mutation(root))
+
     def test_validates_complete_host_only_lifecycle(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

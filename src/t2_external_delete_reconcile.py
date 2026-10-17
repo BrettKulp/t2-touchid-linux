@@ -619,6 +619,7 @@ def append_checked(
     milestone: str,
     evidence: dict[str, Any],
 ) -> ExternalDeleteHistory:
+    """Reject invalid candidates; the initial read may repair an existing torn tail."""
     records = t2_mutation_journal.read(path)
     history = validate_history(records)
     if history.operation_id != operation_id:

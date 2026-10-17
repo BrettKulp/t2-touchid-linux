@@ -68,6 +68,46 @@ class DeleteBatchJournalTests(unittest.TestCase):
                 self.assertEqual(current.phase, batch.IdentityDeleteBatchPhase.STARTED)
                 self.assertTrue(registry.blocks_new_mutation(root))
 
+    def test_torn_tail_repair_rejects_candidate_and_requires_fresh_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            operation_id = "00000000-0000-0000-0000-000000000081"
+            path = root / f"{operation_id}.jsonl"
+            mutation.create(
+                path, "delete-batch", two_identity_baseline(), operation_id
+            )
+            stale = batch.read(path)
+            baseline_records = mutation.read(path)
+            torn_tail = b'{"milestone":'
+            with path.open("ab") as stream:
+                stream.write(torn_tail)
+            with self.assertRaises(batch.IdentityDeleteBatchJournalError):
+                batch.append_checked(path, stale, "DELETE_BATCH_STARTED", {})
+
+            records = mutation.validate_records(path.read_bytes().splitlines(keepends=True))
+            self.assertEqual(records[:-1], baseline_records)
+            self.assertEqual(records[-1]["milestone"], "TORN_TAIL_TRUNCATED")
+            self.assertEqual(records[-1]["evidence"], {"truncated_bytes": len(torn_tail)})
+            repaired = batch.read(path)
+            self.assertEqual(repaired.phase, batch.IdentityDeleteBatchPhase.BASELINE)
+            self.assertFalse(registry.blocks_new_mutation(root))
+
+            valid = {
+                "finger_names": ["finger-1", "finger-3"],
+                "identity_count": 2,
+                "identifiers_redacted": True,
+            }
+            before_retry = path.read_bytes()
+            with self.assertRaisesRegex(mutation.JournalError, "guarded append"):
+                batch.append_checked(path, stale, "DELETE_BATCH_STARTED", valid)
+            self.assertEqual(path.read_bytes(), before_retry)
+            current = batch.append_checked(
+                path, repaired, "DELETE_BATCH_STARTED", valid
+            )
+            self.assertEqual(current.phase, batch.IdentityDeleteBatchPhase.STARTED)
+            self.assertTrue(registry.blocks_new_mutation(root))
+
     def test_stale_caller_history_cannot_append_to_a_newer_valid_history(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
