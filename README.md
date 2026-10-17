@@ -303,6 +303,9 @@ userspace reinstall also completed without a reboot or hardware unbind.
 Full end-to-end coverage remains limited to the reference model. The
 [MacBookPro16,2 report](docs/MACBOOKPRO16_2.md) records additional
 firmware-specific results and their limits.
+The [MacBookAir9,1 report](docs/MACBOOKAIR9_1.md) records a Linux-only
+version 4 setup on bridgeOS 23P2048 and user-reported enrollment, verification,
+and sudo authentication, with remaining controls explicitly unverified.
 Graphical authentication may require another touch after the reader becomes
 ready. Keep password fallback available; results on the reference laptop do
 not establish the same behavior on every hardware or desktop combination.
