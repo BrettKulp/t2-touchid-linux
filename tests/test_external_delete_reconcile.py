@@ -14,6 +14,7 @@ import t2_catacomb_codec as codec
 import t2_catacomb_store as store_module
 import t2_external_delete_reconcile as reconcile
 import t2_mutation_journal as mutation
+import t2_mutation_registry as registry
 from tests.test_catacomb_codec import biolockout_fixture, fixture, master_fixture
 from tests.test_identity_inventory import live_for
 
@@ -217,6 +218,55 @@ def baseline_evidence():
 
 
 class ExternalDeleteJournalTests(unittest.TestCase):
+    def test_rejected_append_preserves_history_and_allows_valid_intent(self):
+        cases = (
+            (
+                "EXTERNAL_DELETE_HOST_COMMITTED",
+                {
+                    "staged_user_sha256": "9" * 64,
+                    "recovery_action": "direct",
+                    "sep_mutation_performed": False,
+                },
+            ),
+            ("EXTERNAL_DELETE_INTENT", {}),
+        )
+        for milestone, evidence in cases:
+            with (
+                self.subTest(milestone=milestone),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                root.chmod(0o700)
+                operation_id = "00000000-0000-0000-0000-000000000090"
+                path = root / f"{operation_id}.jsonl"
+                history = reconcile.create_journal(
+                    path, operation_id, baseline_evidence()
+                )
+                before = path.read_bytes()
+                with self.assertRaises(reconcile.ExternalDeleteReconcileError):
+                    reconcile.append_checked(path, operation_id, milestone, evidence)
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(
+                    reconcile.validate_history(mutation.read(path)), history
+                )
+                self.assertFalse(registry.blocks_new_mutation(root))
+                current = reconcile.append_checked(
+                    path,
+                    operation_id,
+                    "EXTERNAL_DELETE_INTENT",
+                    {
+                        "connection_generation": baseline_evidence()[
+                            "connection_generation"
+                        ],
+                        "staged_user_sha256": "9" * 64,
+                        "survivor_snapshot_sha256": "5" * 64,
+                        "identity_count": 1,
+                        "sep_mutation_performed": False,
+                    },
+                )
+                self.assertEqual(current.phase, reconcile.ExternalDeletePhase.INTENT)
+                self.assertTrue(registry.blocks_new_mutation(root))
+
     def test_validates_complete_host_only_lifecycle(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

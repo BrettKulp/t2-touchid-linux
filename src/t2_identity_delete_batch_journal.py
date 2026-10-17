@@ -210,6 +210,14 @@ def append_checked(
     evidence: dict[str, Any],
 ) -> IdentityDeleteBatchHistory:
     journal.reject_secrets(evidence)
+    records = journal.read(path)
+    candidate = {
+        "operation_id": history.operation_id,
+        "milestone": milestone,
+        "evidence": evidence,
+        "record_hash": "0" * 64,
+    }
+    validate_history([*records, candidate])
     journal.append(
         path,
         history.operation_id,
