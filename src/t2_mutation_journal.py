@@ -66,10 +66,22 @@ def is_repair_milestone(milestone: object) -> bool:
 
 
 def _valid_repair_record(record: dict[str, Any]) -> bool:
-    """Match exactly what _repair_torn_tail writes; typed readers skip these."""
+    """Match exactly what _repair_torn_tail writes; typed readers skip these.
+
+    The caller has already removed record_hash.
+    """
     evidence = record.get("evidence")
     return (
-        record.get("sequence") != 0
+        set(record)
+        == {
+            "format_version",
+            "operation_id",
+            "sequence",
+            "previous_hash",
+            "milestone",
+            "evidence",
+        }
+        and record.get("sequence") != 0
         and isinstance(evidence, dict)
         and set(evidence) == {"truncated_bytes"}
         and type(evidence["truncated_bytes"]) is int

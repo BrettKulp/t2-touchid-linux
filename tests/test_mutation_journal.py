@@ -286,6 +286,24 @@ class MutationJournalTests(unittest.TestCase):
                 journal.JournalError, "invalid torn-tail repair record at sequence 0"
             ):
                 journal.read(path)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "journal.jsonl"
+            operation_id, first = journal.create(path, "enroll", baseline())
+            unsigned = {
+                "format_version": journal.FORMAT_VERSION,
+                "operation_id": operation_id,
+                "sequence": 1,
+                "previous_hash": first["record_hash"],
+                "milestone": journal.REPAIR_MILESTONE,
+                "evidence": {"truncated_bytes": 1},
+                "unexpected": True,
+            }
+            forged = {**unsigned, "record_hash": journal.record_hash(unsigned)}
+            path.write_bytes(path.read_bytes() + journal.canonical(forged) + b"\n")
+            with self.assertRaisesRegex(
+                journal.JournalError, "invalid torn-tail repair record at sequence 1"
+            ):
+                journal.read(path)
 
 
 if __name__ == "__main__":
