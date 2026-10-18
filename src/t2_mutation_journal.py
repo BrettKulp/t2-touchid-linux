@@ -65,6 +65,30 @@ def is_repair_milestone(milestone: object) -> bool:
     return milestone == REPAIR_MILESTONE
 
 
+def _valid_repair_record(record: dict[str, Any]) -> bool:
+    """Match exactly what _repair_torn_tail writes; typed readers skip these.
+
+    The caller has already removed record_hash.
+    """
+    evidence = record.get("evidence")
+    return (
+        set(record)
+        == {
+            "format_version",
+            "operation_id",
+            "sequence",
+            "previous_hash",
+            "milestone",
+            "evidence",
+        }
+        and record.get("sequence") != 0
+        and isinstance(evidence, dict)
+        and set(evidence) == {"truncated_bytes"}
+        and type(evidence["truncated_bytes"]) is int
+        and evidence["truncated_bytes"] > 0
+    )
+
+
 def _durable_file_sync(descriptor: int) -> None:
     sync = getattr(os, "fdatasync", os.fsync)
     sync(descriptor)
@@ -309,6 +333,10 @@ def validate_records(lines: list[bytes]) -> list[dict[str, Any]]:
             operation_id = record.get("operation_id")
         if record.get("operation_id") != operation_id:
             raise JournalError(f"operation ID changed at sequence {sequence}")
+        if is_repair_milestone(record.get("milestone")) and not _valid_repair_record(
+            record
+        ):
+            raise JournalError(f"invalid torn-tail repair record at sequence {sequence}")
         record["record_hash"] = supplied_hash
         records.append(record)
         previous_hash = supplied_hash
@@ -402,6 +430,8 @@ def append(
         raise JournalError("invalid operation UUID") from error
     if not milestone or not milestone.isascii() or not milestone.replace("_", "").isalnum():
         raise JournalError("invalid milestone name")
+    if is_repair_milestone(milestone):
+        raise JournalError("torn-tail repair records are written only by journal repair")
     reject_secrets(evidence)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     parent_info = path.parent.stat()

@@ -28,6 +28,118 @@ def two_identity_baseline():
 
 
 class DeleteBatchJournalTests(unittest.TestCase):
+    def test_rejected_append_preserves_history_and_allows_valid_start(self):
+        cases = (
+            (
+                "DELETE_BATCH_ITEM_INTENT",
+                {"finger_name": "finger-1", "ordinal": 0},
+            ),
+            ("DELETE_BATCH_STARTED", {}),
+        )
+        for milestone, evidence in cases:
+            with (
+                self.subTest(milestone=milestone),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                root.chmod(0o700)
+                operation_id = "00000000-0000-0000-0000-000000000081"
+                path = root / f"{operation_id}.jsonl"
+                mutation.create(
+                    path, "delete-batch", two_identity_baseline(), operation_id
+                )
+                history = batch.read(path)
+                before = path.read_bytes()
+                with self.assertRaises(batch.IdentityDeleteBatchJournalError):
+                    batch.append_checked(path, history, milestone, evidence)
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(batch.read(path), history)
+                self.assertFalse(registry.blocks_new_mutation(root))
+                current = batch.append_checked(
+                    path,
+                    history,
+                    "DELETE_BATCH_STARTED",
+                    {
+                        "finger_names": ["finger-1", "finger-3"],
+                        "identity_count": 2,
+                        "identifiers_redacted": True,
+                    },
+                )
+                self.assertEqual(current.phase, batch.IdentityDeleteBatchPhase.STARTED)
+                self.assertTrue(registry.blocks_new_mutation(root))
+
+    def test_torn_tail_repair_rejects_candidate_and_requires_fresh_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            operation_id = "00000000-0000-0000-0000-000000000081"
+            path = root / f"{operation_id}.jsonl"
+            mutation.create(
+                path, "delete-batch", two_identity_baseline(), operation_id
+            )
+            stale = batch.read(path)
+            baseline_records = mutation.read(path)
+            torn_tail = b'{"milestone":'
+            with path.open("ab") as stream:
+                stream.write(torn_tail)
+            with self.assertRaises(batch.IdentityDeleteBatchJournalError):
+                batch.append_checked(path, stale, "DELETE_BATCH_STARTED", {})
+
+            records = mutation.validate_records(path.read_bytes().splitlines(keepends=True))
+            self.assertEqual(records[:-1], baseline_records)
+            self.assertEqual(records[-1]["milestone"], "TORN_TAIL_TRUNCATED")
+            self.assertEqual(records[-1]["evidence"], {"truncated_bytes": len(torn_tail)})
+            repaired = batch.read(path)
+            self.assertEqual(repaired.phase, batch.IdentityDeleteBatchPhase.BASELINE)
+            self.assertFalse(registry.blocks_new_mutation(root))
+
+            valid = {
+                "finger_names": ["finger-1", "finger-3"],
+                "identity_count": 2,
+                "identifiers_redacted": True,
+            }
+            before_retry = path.read_bytes()
+            with self.assertRaisesRegex(mutation.JournalError, "guarded append"):
+                batch.append_checked(path, stale, "DELETE_BATCH_STARTED", valid)
+            self.assertEqual(path.read_bytes(), before_retry)
+            current = batch.append_checked(
+                path, repaired, "DELETE_BATCH_STARTED", valid
+            )
+            self.assertEqual(current.phase, batch.IdentityDeleteBatchPhase.STARTED)
+            self.assertTrue(registry.blocks_new_mutation(root))
+
+    def test_stale_caller_history_cannot_append_to_a_newer_valid_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            operation_id = "00000000-0000-0000-0000-000000000081"
+            path = root / f"{operation_id}.jsonl"
+            mutation.create(
+                path, "delete-batch", two_identity_baseline(), operation_id
+            )
+            stale = batch.read(path)
+            current = batch.append_checked(
+                path,
+                stale,
+                "DELETE_BATCH_STARTED",
+                {
+                    "finger_names": ["finger-1", "finger-3"],
+                    "identity_count": 2,
+                    "identifiers_redacted": True,
+                },
+            )
+            before = path.read_bytes()
+            with self.assertRaisesRegex(mutation.JournalError, "guarded append"):
+                batch.append_checked(
+                    path,
+                    stale,
+                    "DELETE_BATCH_ITEM_INTENT",
+                    {"finger_name": "finger-1", "ordinal": 0},
+                )
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(batch.read(path), current)
+            self.assertTrue(registry.blocks_new_mutation(root))
+
     def test_ordered_items_reconcile_and_release_mutation_gate(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -110,6 +222,28 @@ class DeleteBatchJournalTests(unittest.TestCase):
                 batch.IdentityDeleteBatchJournalError, "misbound"
             ):
                 batch.read(path)
+
+    def test_repair_milestone_cannot_bypass_batch_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            operation_id = "00000000-0000-0000-0000-000000000081"
+            path = root / f"{operation_id}.jsonl"
+            mutation.create(
+                path, "delete-batch", two_identity_baseline(), operation_id
+            )
+            history = batch.read(path)
+            before = path.read_bytes()
+            with self.assertRaisesRegex(mutation.JournalError, "only by journal repair"):
+                batch.append_checked(
+                    path,
+                    history,
+                    mutation.REPAIR_MILESTONE,
+                    {"truncated_bytes": 1, "finger_name": "finger-1"},
+                )
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(batch.read(path), history)
+            self.assertFalse(registry.blocks_new_mutation(root))
 
 
 if __name__ == "__main__":

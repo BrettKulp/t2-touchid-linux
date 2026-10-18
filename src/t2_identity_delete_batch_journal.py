@@ -209,7 +209,19 @@ def append_checked(
     milestone: str,
     evidence: dict[str, Any],
 ) -> IdentityDeleteBatchHistory:
+    """Validate before append, allowing existing torn-tail repair during the read.
+
+    Repair changes the journal head; callers must read fresh history before retrying.
+    """
     journal.reject_secrets(evidence)
+    records = journal.read(path)
+    candidate = {
+        "operation_id": history.operation_id,
+        "milestone": milestone,
+        "evidence": evidence,
+        "record_hash": "0" * 64,
+    }
+    validate_history([*records, candidate])
     journal.append(
         path,
         history.operation_id,
