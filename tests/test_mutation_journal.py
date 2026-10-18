@@ -227,6 +227,66 @@ class MutationJournalTests(unittest.TestCase):
                 file_sync.assert_called()
                 dir_sync.assert_called()
 
+    def test_callers_cannot_append_repair_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "journal.jsonl"
+            operation_id, _first = journal.create(path, "enroll", baseline())
+            path.write_bytes(path.read_bytes() + b'{"milestone":')
+            before = path.read_bytes()
+            with self.assertRaisesRegex(journal.JournalError, "only by journal repair"):
+                journal.append(
+                    path,
+                    operation_id,
+                    journal.REPAIR_MILESTONE,
+                    {"truncated_bytes": 1},
+                )
+            self.assertEqual(path.read_bytes(), before)
+            records = journal.read(path)
+            self.assertEqual(
+                [record["milestone"] for record in records],
+                ["BASELINE_RECONCILED", journal.REPAIR_MILESTONE],
+            )
+
+    def test_reader_rejects_repair_records_that_repair_never_writes(self):
+        cases = (
+            ("empty", {}),
+            ("zero", {"truncated_bytes": 0}),
+            ("bool", {"truncated_bytes": True}),
+            ("extra", {"truncated_bytes": 1, "note": "forged"}),
+            ("not-object", [1]),
+        )
+        for label, evidence in cases:
+            with self.subTest(label), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "journal.jsonl"
+                operation_id, first = journal.create(path, "enroll", baseline())
+                forged = journal._unsigned_record(
+                    operation_id,
+                    1,
+                    first["record_hash"],
+                    journal.REPAIR_MILESTONE,
+                    evidence,
+                )
+                path.write_bytes(path.read_bytes() + journal.canonical(forged) + b"\n")
+                with self.assertRaisesRegex(
+                    journal.JournalError, "invalid torn-tail repair record at sequence 1"
+                ):
+                    journal.read(path)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "journal.jsonl"
+            forged = journal._unsigned_record(
+                "00000000-0000-0000-0000-000000000091",
+                0,
+                None,
+                journal.REPAIR_MILESTONE,
+                {"truncated_bytes": 1},
+            )
+            path.write_bytes(journal.canonical(forged) + b"\n")
+            path.chmod(0o600)
+            with self.assertRaisesRegex(
+                journal.JournalError, "invalid torn-tail repair record at sequence 0"
+            ):
+                journal.read(path)
+
 
 if __name__ == "__main__":
     unittest.main()
