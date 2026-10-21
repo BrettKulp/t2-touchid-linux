@@ -28,6 +28,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Present unassigned compatibility fingerprints through reconciled neutral
+  slots and require stable inventory and match attestations before accepting
+  a slot result. Native matching continues to require its normal authority.
 - Preserve compatibility authority after one completed label-only rename,
   requiring its private immutable journal, exact import backup and component
   hashes, unchanged account and identity metadata, and matching runtime
