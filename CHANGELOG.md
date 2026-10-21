@@ -8,6 +8,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Add `tools/install-pam.sh --sudo-only` to install the backed-up sudo
+  fingerprint stack without changing PolicyKit or lock-screen authentication.
 - Add an explicit one-shot compatibility `recover` stage for a clean bind
   followed by an exact pre-state-only unlock failure. It restores an absent
   alias from the existing imported keybag and unlocks in the same session,
